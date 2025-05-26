@@ -121,15 +121,97 @@ class BingService:
         return extract_text
 
 
+import re
+import openai
+# ... ❶ 此處保留檔案原有 import 與其他程式碼 ...
+
+# ====== 新增：基本同義詞正規化 ======
+def _normalize_user_query(q: str) -> str:
+    """
+    將常見口語描述先替換成正規專有名詞，
+    以提高 GPT 與 Bing 的命中率。
+    """
+    synonym_map = {
+        r"\blight\s*blade\b": "lightsaber",
+        r"\bkind of force\b": "the Force",
+        r"\bforce power\b": "the Force",
+        r"\bmagic stick\b": "wand",
+        r"\bresume\b": "CV curriculum vitae",
+        # ↑ 可視情況自行擴充
+    }
+    for pat, repl in synonym_map.items():
+        q = re.sub(pat, repl, q, flags=re.I)
+    return q.strip()
+
+
+# ====== 取代舊版 rewrite_query_with_gpt ======
+def rewrite_query_with_gpt(original_query: str, config: dict) -> str:
+    """
+    產出「短、命中率高」的英文搜尋關鍵字。
+    1) 先做同義詞正規化
+    2) 請 GPT：若能辨識實體 ➜ 只回 'Star Wars lightsaber'
+                否則 ➜ 回 ≤8 字的關鍵字
+    """
+    try:
+        openai_cfg   = config.get("llm_service", {}).get("openai_api", {})
+        openai.api_key = openai_cfg.get("api_key")
+        model        = openai_cfg.get("model", "gpt-3.5-turbo")
+        # 固定輸出風格
+        temperature  = 0.2
+        max_tokens   = 16   # 最多約 10 個英文單字
+
+        # 1️⃣ 預先正規化
+        normalized_q = _normalize_user_query(original_query)
+
+        system_msg = (
+            "You are an expert search assistant. "
+            "Convert the user's request into a VERY SHORT (<=10 words) English web-search query.\n"
+            "• If the request clearly refers to a well-known entity (movie, book, brand, person, event, concept), "
+            "  output ONLY that entity name.\n"
+            "• Otherwise, output concise English keywords (<=8 words).\n"
+            "Output MUST be a single line, no quotes, no commentary."
+        )
+
+        resp = openai.ChatCompletion.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user",   "content": normalized_q}
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=1.0
+        )
+
+        return resp.choices[0].message.content.strip()
+
+    except Exception as e:
+        # 若 GPT 失敗，就回原始查詢
+        logger.warning(f"GPT query rewriting failed, fallback to original input. Error: {e}")
+        return original_query
+
+
 if __name__ == '__main__':
+    import os
+    import yaml
+    from Util import get_project_root
+    from BingService import BingService
+
     # Load config
     with open(os.path.join(get_project_root(), 'src/config/config.yaml'), encoding='utf-8') as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
-        service = BingService(config)
-        website_df = service.call_bing_search_api('What is ChatGPT')
-        print("===========Website df:============")
-        print(website_df)
-        # text_df = service.call_urls_and_extract_sentences(website_df)
-        text_df = service.call_urls_and_extract_sentences_concurrent(website_df)
-        print("===========text df:============")
-        print(text_df)
+
+    service = BingService(config)
+
+    original_query = 'What is that movie where someone fixes solar panels in space?'
+    rewritten_query = rewrite_query_with_gpt(original_query, config)
+    print(f"User Input: {original_query}")
+    print(f"GPT-Rewritten Query: {rewritten_query}")
+
+    website_df = service.call_bing_search_api(rewritten_query)
+    print("===========Website df:============")
+    print(website_df)
+
+    text_df = service.call_urls_and_extract_sentences_concurrent(website_df)
+    print("===========text df:============")
+    print(text_df)

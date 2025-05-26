@@ -11,6 +11,7 @@ source_service:
     result_count: 3
     sentence_count_per_site: 20
     text_extract: trafilatura # beautifulsoup / trafilatura
+    use_gpt_query: true
 llm_service:
   provider: openai # openai/goose_ai
   openai_api:
